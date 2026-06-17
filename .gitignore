@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.db
+*.csv
+*.mat
+*.zip
+*.pkl
+.venv/
+venv/
+.Datasets/
+Datasets/
+.vscode/
