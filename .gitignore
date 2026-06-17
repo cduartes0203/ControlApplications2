@@ -20,7 +20,6 @@ bin-release/
 __pycache__/
 *.pyc
 *.db
-*.csv
 *.mat
 *.zip
 *.pkl
