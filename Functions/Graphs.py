@@ -96,27 +96,54 @@ def PlotSeries(xSeries=None,ySeries=None,mode='plt',w=5,h=3,title='r'):
         PlotSeriesPLY(xSeries=xSeries,ySeries=ySeries,w=w*100,h=h*100,title=title)
      
 
-def PlotTwoScales(y1,y2,x1=None,x2=None,w=5,h=3,y1_name=None,y2_name=None, x_name=None, out=None, title=None):
-    if y1_name is None: y1_name = 'y1'
-    if y2_name is None: y2_name = 'y2'
-    if x_name is None: x_name = 'Cycle'
+def PlotTwoScales(y1,y2,x1=None,x2=None,w=5,h=3,x_labels=None, y_labels=None,names=None, out=None, title=None):
+    if names is None: names = ['s1','s2']
+    if y_labels is None: y_labels = ['Y1','Y2']
+    if x_labels is None: x_labels = ['X1','X2']
     if x1 is None: x1 = np.arange(len(y1))
     if x2 is None: x2 = np.arange(len(y2))
-    fig, ax1 = plt.subplots(figsize=(w, h))
 
-    ax1.set_title(title)
-    ax1.set_xlabel(x_name)
-    ax1.set_ylabel(y1_name, color='blue')
-    ax1.plot(x1, y1, color='blue')
-    ax1.tick_params(axis='y', labelcolor='blue')
+    fig, ax = plt.subplots(figsize=(w, h))
+    #fig.subplots_adjust(bottom=-0.25)
 
-    ax2 = ax1.twinx()  # instantiate a second Axes that shares the same x-axis
+    ax2_y = ax.twinx()
+    ax2_x = ax2_y.twiny()
 
-    ax2.set_ylabel(y2_name, color='red')  # we already handled the x-label with ax1
-    ax2.plot(x2, y2, color='red')
-    ax2.tick_params(axis='y', labelcolor='red')
+    ax2_y.set_ylabel(y_labels[1], color='red')
+    ax2_y.tick_params(axis='y',length=4, width=1.25, colors='r')
 
-    fig.tight_layout()
+
+    p1, = ax.plot(x1, y1, color='blue', label=names[0])
+    p2, = ax2_x.plot(x2,y2, color='red', label=names[1])
+
+    ax.set(xlabel=x_labels[0], ylabel=y_labels[0])
+    ax2_x.set(xlabel=x_labels[1], ylabel=y_labels[1])
+
+    ax.yaxis.label.set_color(p1.get_color())
+    ax.xaxis.label.set_color(p1.get_color())
+    ax2_x.xaxis.label.set_color(p2.get_color())
+    ax2_y.yaxis.label.set_color(p2.get_color())
+    
+    ax.tick_params(axis='y',length=4, width=1.25, colors=p1.get_color())
+    ax.tick_params(axis='x',length=4, width=1.25, colors=p1.get_color())
+    ax2_x.tick_params(axis='x',length=4, width=1.25, colors=p2.get_color())
+    ax2_x.tick_params(axis='y',length=4, width=1.25, colors=p2.get_color())
+
+    ax2_x.grid(True, linestyle=':', color=p2.get_color(), alpha=0.5)
+    ax2_y.grid(True, linestyle=':', color=p2.get_color(), alpha=0.5)
+
+    ax.grid(True, linestyle=':', linewidth=1.1, color=p1.get_color(), alpha=0.5)
+    ax.grid(True, linestyle=':', color=p1.get_color(), alpha=0.5)
+
+    ax2_x.spines['left'].set_color('blue')
+    ax2_x.spines['right'].set_color('red')
+    ax2_x.spines['top'].set_color('red')
+    ax2_x.spines['bottom'].set_color('blue')
+
+    ax2_x.legend(handles=[p1, p2],fontsize='small',framealpha=1)
+    fig.tight_layout(rect=(0,0,1,0.95))
+    fig.suptitle(title, fontsize='large')
+        
     if out != None:
         plt.savefig(out, dpi=500)  # otherwise the right y-label is slightly clipped
     plt.show()
