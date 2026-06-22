@@ -553,77 +553,6 @@ def plot_3d(df,width=600,height=600,title = 'r',xlabel = 'Frequency (Hz)',ylabel
   fig.show()
   return traces
 
-
-def plot_3d_fft_2(df,width=600,height=600,title = 'r',xlabel = 'Frequency (Hz)',ylabel = 'Sample',zlabel = 'Amplitude'):
-    x = [df.iloc[:, 0] for i in range(1, len(df.columns))]
-    y = []
-    for i in range(1, len(df.columns)):
-        y.append([i for j in range(len(df))])
-    z = [df.iloc[:, i] for i in range(1, len(df.columns))]
-    
-    traces = []
-    for i in range(len(x)):
-        trace = go.Scatter3d(
-            x=x[i],
-            y=y[i],
-            z=z[i],
-            mode='lines',
-            name=df.columns[i + 1],
-            line=dict(color=z[i], colorscale='Viridis', width=2),
-        )
-        traces.append(trace)
-    
-    return traces
-def plot_3d_inline(fft_r,env_r,title1 = 'df1',title2 = 'df2'):
-
-    fig = make_subplots( rows=1, cols=2, specs=[[{'type': 'scatter3d'}, {'type': 'scatter3d'}]], subplot_titles=(title1, title2),)
-
-    fft_traces = plot_3d_fft_2(fft_r, 500, 500, 'fft_r', 'r', 'r', 'r')
-    for trace in fft_traces:
-        fig.add_trace(trace, row=1, col=1)
-
-    env_traces = plot_3d_fft_2(env_r, 500, 500, 'env_r', 'r', 'r', 'r')
-    for trace in env_traces:
-        fig.add_trace(trace, row=1, col=2)
-
-    fig.update_layout( height=600, width=1200, title_text="Comparison of FFT_R and ENV_R in 3D")
-    fig.show()
-
-
-def plot_3d_fft(df,width=600,height=600,title = 'r',xlabel = 'Frequency (Hz)',ylabel = 'Sample',zlabel = 'Amplitude'):
-    x = [df.iloc[:,0] for i in range(1,len(df.columns))]
-    y = []
-    for i in range(1,len(df.columns)):
-        y.append([i for j in range(len(df))])
-    z = [df.iloc[:,i] for i in range(1,len(df.columns))]
-    traces = []
-    for i in range(len(x)):
-        trace = go.Scatter3d(
-            x=x[i],
-            y=y[i],
-            z=z[i],
-            mode='lines',
-            name=df.columns[i+1],
-            line=dict(color=z[i], colorscale='Viridis', width=2),
-        )
-        traces.append(trace)
-
-    layout = go.Layout(
-        title=title,
-        scene=dict(
-            xaxis=dict(title=xlabel),
-            yaxis=dict(title=ylabel),
-            zaxis=dict(title=zlabel),
-            camera=dict(
-                eye=dict(x=-1.25, y=-1.25, z=0.75)
-            )
-        ),
-        width=width, height = height
-    )
-
-    fig = go.Figure(data=traces, layout=layout)
-    fig.show()
-
 def plot_dataframe2(df, df2, df3,label = '1',label1 = '2',label2 = '3'):
     # Number of columns and rows for subplots
     num_cols = len(df.columns)
@@ -950,3 +879,95 @@ def PlotDataframes(dataframes, cols_qtd=4,w=12,h=8):
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.95])  # Leave space for suptitle
     plt.show()
+
+
+def PlotMPCTracksPLY(x1, y1, x2, y2, delta_history, v_history,width=800,height=500, x_mid=None, y_mid=None):
+    """
+    Plota as duas trajetórias do MPC com mapas de calor independentes para ângulo de esterçamento (Viridis)
+    e velocidade (Magma), incluindo a linha de referência central se fornecida.
+    """
+    fig = go.Figure()
+
+    # 1. Traça a linha central de referência da pista (se fornecida)
+    if x_mid is not None and y_mid is not None:
+        fig.add_trace(go.Scatter(
+            x=x_mid, y=y_mid, 
+            mode='lines', 
+            name='Track Midline Reference', 
+            line=dict(color='lightgray', width=2, dash='dash')
+        ))
+
+    # 2. Trajetória 1 (Baseada em x1, y1) -> Mapa de Calor: Ângulo (Viridis)
+    fig.add_trace(go.Scatter(
+        x=x1, 
+        y=y1, 
+        mode='lines+markers', 
+        name='Vehicle Profile Path (Angle)',
+        line=dict(color='rgba(100,100,100,0.3)', width=2),
+        marker=dict(
+            size=5,
+            color=delta_history,
+            colorscale='Viridis',
+            cmin=np.min(delta_history),
+            cmax=np.max(delta_history),
+            colorbar=dict(
+                title=dict(text="Angle (deg)", side="bottom"),
+                ticks="outside",
+                x=1.0,          # Empurra para a direita para não sobrepor a legenda
+                len=0.5,         
+                yanchor="middle",
+                y=0.5
+            ),
+            showscale=True
+        ),
+        text=[f"Angle: {delta_history[i]:.2f}°, Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
+        hoverinfo='text+x+y'
+    ))
+
+    # 3. Trajetória 2 (Baseada em x2, y2) -> Mapa de Calor: Velocidade (Magma)
+    fig.add_trace(go.Scatter(
+        x=x2, 
+        y=y2, 
+        mode='lines+markers', 
+        name='Vehicle Profile Path (Speed)',
+        line=dict(color='rgba(100,100,100,0.3)', width=2),
+        marker=dict(
+            size=5,
+            color=v_history,
+            colorscale='Magma',
+            cmin=0,
+            cmax=20,
+            colorbar=dict(
+                title=dict(text="Speed (m/s)", side="bottom"),
+                ticks="outside",
+                x=1.25,          # Empurra ainda mais para a direita para não sobrepor a primeira barra
+                len=0.5,         
+                yanchor="middle",
+                y=0.5
+            ),
+            showscale=True
+        ),
+        text=[f"Angle: {delta_history[i]:.2f}°, Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
+        hoverinfo='text+x+y'
+    ))
+
+    # 4. Configurações de Layout e Proporção Física Real (Aspect Ratio 1:1)
+    fig.update_layout(
+        title="Discrete MPC: Speed & Angle Profile Heatmap Across Lap Mission",
+        width = width, height = height,
+        xaxis_title="X Coordinate (meters)", 
+        yaxis_title="Y Coordinate (meters)",
+        #yaxis=dict(scaleanchor="x", scaleratio=1,range=[-130, 20]), 
+        #xaxis=dict(range=[-20, 130]), 
+        
+        showlegend=True,
+        template="plotly_white",
+        legend=dict(
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top"
+        )
+    )
+
+    fig.show()
