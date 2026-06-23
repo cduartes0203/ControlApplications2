@@ -880,12 +880,67 @@ def PlotDataframes(dataframes, cols_qtd=4,w=12,h=8):
     plt.tight_layout(rect=[0, 0, 1, 0.95])  # Leave space for suptitle
     plt.show()
 
+def RaceTrackOffset(x, y, d=2.0):
+    """
+    Gera uma nova pista paralela onde cada ponto (x2, y2) dista exatamente
+    'd' metros do ponto correspondente (x, y) original.
+    
+    d > 0: Desloca para um lado (ex: direita/fora)
+    d < 0: Desloca para o lado oposto (ex: esquerda/dentro)
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = len(x)
+    
+    # Vetores para armazenar as direções normais
+    nx = np.zeros(n)
+    ny = np.zeros(n)
+    
+    # Calcula os vetores normais para cada ponto da pista
+    for i in range(n):
+        # Definição dos pontos vizinhos para cálculo da tangente local
+        if i == 0:
+            # Primeiro ponto: usa o próximo
+            tx = x[1] - x[0]
+            ty = y[1] - y[0]
+        elif i == n - 1:
+            # Último ponto: usa o anterior
+            tx = x[n-1] - x[n-2]
+            ty = y[n-1] - y[n-2]
+        else:
+            # Pontos intermediários: diferença centralizada para maior precisão
+            tx = x[i+1] - x[i-1]
+            ty = y[i+1] - y[i-1]
+            
+        # Magnitude (comprimento) do vetor tangente
+        norma = np.sqrt(tx**2 + ty**2)
+        if norma == 0:
+            norma = 1e-6
+            
+        # Vetor tangente unitário
+        tx /= norma
+        ty /= norma
+        
+        # Rotaciona o vetor tangente em 90 graus para obter a normal unitária (nx, ny)
+        nx[i] = -ty
+        ny[i] = tx
+        
+    # Aplica o deslocamento exato de 'd' metros
+    x_history2 = x + d * nx
+    y_history2 = y + d * ny
+    
+    return x_history2, y_history2
 
-def PlotMPCTracksPLY(x1, y1, x2, y2, delta_history, v_history,width=800,height=500, x_mid=None, y_mid=None):
+def PlotMPCTracksPLY(data,width=800,height=500):
     """
     Plota as duas trajetórias do MPC com mapas de calor independentes para ângulo de esterçamento (Viridis)
     e velocidade (Magma), incluindo a linha de referência central se fornecida.
     """
+    x_mid, y_mid, x_t,y_t, t_history, delta_history, psi_history, v_history = data
+    x_t2,y_t2 = RaceTrackOffset(x_t,y_t,-3)
+    x_t3,y_t3 = RaceTrackOffset(x_t,y_t,-6)
+    y_t2[0] = y_t2[1]
+    y_t3[0] = y_t3[1]
     fig = go.Figure()
 
     # 1. Traça a linha central de referência da pista (se fornecida)
@@ -893,17 +948,48 @@ def PlotMPCTracksPLY(x1, y1, x2, y2, delta_history, v_history,width=800,height=5
         fig.add_trace(go.Scatter(
             x=x_mid, y=y_mid, 
             mode='lines', 
-            name='Track Midline Reference', 
+            name='Track Midline<br>Reference', 
             line=dict(color='lightgray', width=2, dash='dash')
         ))
 
     # 2. Trajetória 1 (Baseada em x1, y1) -> Mapa de Calor: Ângulo (Viridis)
     fig.add_trace(go.Scatter(
-        x=x1, 
-        y=y1, 
+        x=x_t, 
+        y=y_t, 
         mode='lines+markers', 
-        name='Vehicle Profile Path (Angle)',
-        line=dict(color='rgba(100,100,100,0.3)', width=2),
+        name='Vehicle Speed<br>Profile',
+        #line=dict(color='rgba(100,100,100,0.3)', width=2),
+        marker=dict(
+            size=5,
+            color=v_history,
+            colorscale='Plasma',
+            cmin=0,
+            cmax=np.max(v_history),
+            colorbar=dict(
+                title=dict(text="Speed<br>(m/s)", side="bottom", font=dict(size=13)),
+                ticks="outside",
+                x=1.0,          # Empurra para a direita para não sobrepor a legenda
+                len=0.5,         
+                yanchor="middle",
+                y=0.3
+            ),
+            showscale=True
+        ),
+        text=[f"Time Instant: {t_history[i]:.2f} s <br> Stirring Angle: {delta_history[i]:.2f}°<br> Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
+        hoverinfo='text+x+y'
+    ))
+
+    # 3. Trajetória 2 (Baseada em x2, y2) -> Mapa de Calor: Velocidade (Magma)
+    fig.add_trace(go.Scatter(
+        x=x_t2, 
+        y=y_t2, 
+        mode='lines+markers', 
+        #mode='lines', 
+        name='Vehicle Stirring<br>Angle Profile',
+        line=dict(
+            #color='rgba(100,100,100,0.3)',
+              width=2),
+        #line=dict(color=delta_history, colorscale='Viridis', width=2),
         marker=dict(
             size=5,
             color=delta_history,
@@ -911,45 +997,19 @@ def PlotMPCTracksPLY(x1, y1, x2, y2, delta_history, v_history,width=800,height=5
             cmin=np.min(delta_history),
             cmax=np.max(delta_history),
             colorbar=dict(
-                title=dict(text="Angle (deg)", side="bottom"),
-                ticks="outside",
-                x=1.0,          # Empurra para a direita para não sobrepor a legenda
-                len=0.5,         
-                yanchor="middle",
-                y=0.5
-            ),
-            showscale=True
-        ),
-        text=[f"Angle: {delta_history[i]:.2f}°, Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
-        hoverinfo='text+x+y'
-    ))
-
-    # 3. Trajetória 2 (Baseada em x2, y2) -> Mapa de Calor: Velocidade (Magma)
-    fig.add_trace(go.Scatter(
-        x=x2, 
-        y=y2, 
-        mode='lines+markers', 
-        name='Vehicle Profile Path (Speed)',
-        line=dict(color='rgba(100,100,100,0.3)', width=2),
-        marker=dict(
-            size=5,
-            color=v_history,
-            colorscale='Magma',
-            cmin=0,
-            cmax=20,
-            colorbar=dict(
-                title=dict(text="Speed (m/s)", side="bottom"),
+                title=dict(text="Stirring<br>Angle (deg)", side="bottom",font=dict(size=13)),
                 ticks="outside",
                 x=1.25,          # Empurra ainda mais para a direita para não sobrepor a primeira barra
                 len=0.5,         
                 yanchor="middle",
-                y=0.5
+                y=0.3
             ),
             showscale=True
         ),
-        text=[f"Angle: {delta_history[i]:.2f}°, Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
+        text=[f"Time Instant: {t_history[i]:.2f} s <br> Stirring Angle: {delta_history[i]:.2f}°<br> Speed: {v_history[i]:.2f} m/s" for i in range(len(delta_history))],
         hoverinfo='text+x+y'
     ))
+
 
     # 4. Configurações de Layout e Proporção Física Real (Aspect Ratio 1:1)
     fig.update_layout(
