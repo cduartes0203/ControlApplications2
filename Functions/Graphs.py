@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib as mpl
 import plotly.graph_objects as go
+import plotly.express as px
+
 from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
@@ -36,32 +38,90 @@ def PlotSingle(x,y,mode='plt',w=5,h=3,title='r'):
         h=h*100
         PlotPLY(x,y,w,h,title)
 
-def PlotSeriesPLY(xSeries=None,ySeries=None, names=None, title='Séries Temporais',
-                  markers=None, xLabel=None, yLabel=None, w=600, h=400):
+def PlotSeriesPLY(xSeries=None, ySeries=None, names=None, title='Séries Temporais',
+                  markers=None, xLabel=None, yLabel=None, w=800, h=350):
     
-    if xSeries==None: 
+    if ySeries is None or len(ySeries) == 0:
+        return
+
+    if xSeries is None: 
         xSeries = [[i for i in range(len(ySeries[j]))] for j in range(len(ySeries))]
     
     if xLabel is None: xLabel = 'X'
     if yLabel is None: yLabel = 'Y'
     
-    x=xSeries
-    y=ySeries
-    line_modes = ['lines', 'markers']
-    fig = make_subplots(rows=1, cols=1)
+    line_modes = ['lines', 'markers', 'lines+markers']
     
     if names is None:
-        names = [f'Série {i+1}' for i in range(len(y))]
+        names = [f'Série {i+1}' for i in range(len(ySeries))]
     if markers is None:
-        markers = [0] * len(y) # Padrão para todos como 'lines'
+        markers = [0] * len(ySeries)
 
-    for x, y, name, m_idx in zip(x, y, names, markers):
+    fig = go.Figure()
+    layout_axes = {}
+    size = len(ySeries[0])
+    num_series = len(ySeries)
+    # Cores organizadas para diferenciar as réguas de escala na tela
+    cores_eixos = px.colors.sample_colorscale("Turbo", np.linspace(0, 0.9, num_series))
+
+    for idx, (x, y, name, m_idx) in enumerate(zip(xSeries, ySeries, names, markers)):
         mode = line_modes[m_idx] if m_idx < len(line_modes) else 'lines'
-        fig.add_trace(go.Scatter(x=x, y=y, name=name, mode=mode),row=1, col=1)
+        axis_id = "" if idx == 0 else f"{idx + 1}"
+        yaxis_name = f"yaxis{axis_id}"
+        
+        cor_local = cores_eixos[idx % len(cores_eixos)]
+        
+        fig.add_trace(go.Scatter(
+            x=x, 
+            y=y, 
+            name=name, 
+            mode=mode,
+            yaxis=f"y{axis_id}",
+            line=dict(color=cor_local),
+            text=[f"{names[idx]}: {ySeries[idx][i]:.2f} " for i in range(size)],
+            ))
+        
+        if idx == 0:
+            layout_axes["yaxis"] = dict(
+                #title=dict(text=f"{name}                                     .",
+                #            font=dict(color=cor_local)),
+                tickfont=dict(color=cor_local),
+                anchor="free",
+                #overlaying="y",
+                side="left",
+                shift=20,
+                position=1,   
+            )
+        else:
+            # CORREÇÃO: Fixamos position=1.0 e usamos 'shift' em pixels para empurrar os eixos
+            layout_axes[yaxis_name] = dict(
+                #title=dict(font=dict(color=cor_local)),
+                tickfont=dict(color=cor_local),
+                anchor="free",
+                overlaying="y",
+                side="left",
+                position=1,                 # Trava no limite máximo permitido de 1.0
+                shift=20+(idx) * 30,         # Empurra 60 pixels para a direita a cada novo eixo
+                automargin=True               # Força a janela do Plotly a esticar para acomodar o texto
+            )
 
-    fig.update_layout(width=w, height=h, title=title,template='plotly_white')
-    fig.update_yaxes(title_text=yLabel, row=1, col=1,)
-    fig.update_xaxes(title_text=xLabel, row=1, col=1,)
+    fig.update_layout(
+        width=w, 
+        height=h, 
+        title=title,
+        legend=dict(
+            x=1 +0.075*len(xSeries),
+            y=0.5,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(size=11)
+        ),
+        template='plotly_white',
+        # Deixa o domínio padrão em [0, 1], o shift se encarrega do espaço externo
+        xaxis=dict(title=xLabel), 
+        **layout_axes
+    )
+    
     fig.show()
 
 def PlotSeriesPLT(xSeries=None,ySeries=None, names=None, title='Séries Temporais',
