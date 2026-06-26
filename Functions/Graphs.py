@@ -38,7 +38,31 @@ def PlotSingle(x,y,mode='plt',w=5,h=3,title='r'):
         h=h*100
         PlotPLY(x,y,w,h,title)
 
-def PlotSeriesPLY(xSeries=None, ySeries=None, names=None, title='Séries Temporais',
+def PlotSeriesPLY(xSeries=None,ySeries=None, names=None, title='Séries Temporais',
+                  markers=None, w=600, h=400):
+    
+    if xSeries==None: 
+        xSeries = [[i for i in range(len(ySeries[j]))] for j in range(len(ySeries))]
+    x=xSeries
+    y=ySeries
+    line_modes = ['lines', 'markers']
+    fig = make_subplots(rows=1, cols=1)
+    
+    if names is None:
+        names = [f'Série {i+1}' for i in range(len(y))]
+    if markers is None:
+        markers = [0] * len(y) # Padrão para todos como 'lines'
+
+    for x, y, name, m_idx in zip(x, y, names, markers):
+        mode = line_modes[m_idx] if m_idx < len(line_modes) else 'lines'
+        fig.add_trace(go.Scatter(x=x, y=y, name=name, mode=mode),row=1, col=1)
+
+    fig.update_layout(width=w, height=h, title=title,template='plotly_white')
+    fig.update_yaxes(title_text='Amplitude', row=1, col=1,)
+    fig.update_xaxes(title_text='Tempo / Frequência', row=1, col=1,)
+    fig.show()
+
+def PlotSeriesDifScalesPLY(xSeries=None, ySeries=None, names=None, title='Séries Temporais',
                   markers=None, xLabel=None, yLabel=None, w=800, h=350):
     
     if ySeries is None or len(ySeries) == 0:
