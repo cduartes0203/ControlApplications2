@@ -38,6 +38,45 @@ def PlotSingle(x,y,mode='plt',w=5,h=3,title='r'):
         h=h*100
         PlotPLY(x,y,w,h,title)
 
+def PlotSeriesPLY1(xs=None, ys=None, names=None, x_label='Time(s)', y_label='Amplitude', title=None,
+                   markers=None, w=600, h=400):
+    
+    if xs == None: 
+        xs = [[i for i in range(len(ys[j]))] for j in range(len(ys))]
+    line_modes = ['lines', 'markers']
+    fig = make_subplots(rows=1, cols=1)
+    
+    # Correção: alterado de len(y) para len(ys)
+    if names is None:
+        names = [f'Série {i+1}' for i in range(len(ys))] 
+        
+    if markers is None:
+        markers = [0] * len(ys)
+
+    for x, y, name, m_idx in zip(xs, ys, names, markers):
+        mode = line_modes[m_idx] if m_idx < len(line_modes) else 'lines'
+        fig.add_trace(go.Scatter(x=x, y=y, name=name, mode=mode), row=1, col=1)
+
+    # --- AJUSTE DINÂMICO DE MARGEM PARA MAXIMIZAR A ÁREA ---
+    if title is None:
+        # Se não há título, reduzimos o t (top) para 15 ou 20 pixels
+        margin_config = dict(t=20, b=40, l=50, r=20)
+    else:
+        # Se há título, deixamos uma margem maior para ele não encavalar nos eixos
+        margin_config = dict(t=60, b=40, l=50, r=20)
+
+    fig.update_layout(
+        width=w, 
+        height=h, 
+        title=title,
+        template='plotly_white',
+        margin=margin_config  # Aplica o redimensionamento de margem aqui
+    )
+    
+    fig.update_yaxes(title_text=y_label, row=1, col=1)
+    fig.update_xaxes(title_text=x_label, row=1, col=1)
+    fig.show()
+
 def PlotSeriesPLY(xSeries=None,ySeries=None, names=None, title='Séries Temporais',
                   markers=None, w=600, h=400):
     

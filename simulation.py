@@ -32,12 +32,28 @@ SOC = df.iloc[:,0].values
 OCV = df.iloc[:,1].values
 get_OCV = interp1d(SOC, OCV, kind='linear', bounds_error=False, fill_value="extrapolate")
 
+path = r'PMEFC_eta.csv'
+df = pd.read_csv(path)
+PFC = df.iloc[:,0].values
+ETA = df.iloc[:,1].values
+get_ETAfc = interp1d(PFC, ETA, kind='linear', bounds_error=False, fill_value="extrapolate")
+
 def GetBatterieParams(soc):
     Rbat = get_DR(soc)
     Uocv = get_OCV(soc)
     return Rbat, Uocv
 
-def SelSampler(mode='auto'):
+def GetETAfc(pfc):
+    return get_ETAfc(pfc)/100
+
+def GetI_bat(soc,pbat):
+    R_bat, U_ocv = GetBatterieParams(soc)
+    P_bat_est_watts = (pbat) * 1000.0
+    inside_sqrt_est = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_est_watts)
+    I_bat_est = (U_ocv - np.sqrt(inside_sqrt_est)) / (2.0 * R_bat)
+    return I_bat_est
+ 
+def SelSampler(mode='auto'):    
     if mode == 'auto':
         sampler = None
     elif mode == 'tpe':
@@ -52,7 +68,7 @@ def TractionForce(v,acc):
     rho = 1.225
     a = 0
     Area = 8.16
-    m = 13500
+    m = 3000
     g = 9.81
     return m*g*cr*np.cos(a) + m*g*np.sin(a) + m*acc + 0.5*rho*Area*cd*(v**2)
 
@@ -138,8 +154,18 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
                W_X=1, W_Y=1, W_speed=10, W_acc=1.5, W_delta=0.25, W_U0=1, W_U1=2,
                size=1, show=False):
     
+    
+    V_cruising, V_turning = 16, 6
+    acc_max = 2.0
+    acc_min = -3
+    delta_max = np.deg2rad(30)
+    delta_min = -np.deg2rad(30)
+    l = 2.5 
     BreakCheck = False
-    path = r'DyntheticDataset\RaceTrack4.csv' 
+
+
+
+    path = r'DyntheticDataset\RaceTrack5.csv' 
     try:
         df = pd.read_csv(path)
         x_mid = df['x_coords'].values[:] * size
@@ -161,12 +187,11 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
     get_x_at_s = interp1d(s_coor, x_mid, kind='linear', bounds_error=False, fill_value="extrapolate")
     get_y_at_s = interp1d(s_coor, y_mid, kind='linear', bounds_error=False, fill_value="extrapolate")
 
-    V_cruising, V_turning = 18, 6
-    l = 2.5 
+    
 
     s_total_traveled = 0.0
     last_current_idx = 0
-    x_current = np.array([x_mid[0], y_mid[0], 0.0, 0.0])
+    x_current = np.array([75, 0, 0.0, 0.0])
     u_prev = np.array([0.0, 0.0])
 
     t_history, x_history, y_history, v_history = [0.0], [x_current[0]], [x_current[1]], [x_current[2]]
@@ -175,7 +200,7 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
     Preq_horizon = [np.zeros(n_horizon)]
     turning_history = [0]
 
-    t_lim = 50 * track_percentual * size
+    t_lim = 500 * track_percentual * size
     sim_steps = int(sim_steps * track_percentual * 1.1 * size)
     
     # ==============================================================================
@@ -223,16 +248,16 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
             cost += W_U0 * cp.square(U_cvx[0, k] - U_cvx[0, k-1])
             cost += W_U1 * cp.square(U_cvx[1, k] - U_cvx[1, k-1])
             
-        constraints += [U_cvx[0, k] >= -5.0, U_cvx[0, k] <= 3]
-        constraints += [U_cvx[1, k] >= -np.deg2rad(30), U_cvx[1, k] <= np.deg2rad(30)]
+        constraints += [U_cvx[0, k] >= acc_min, U_cvx[0, k] <= acc_max]
+        constraints += [U_cvx[1, k] >= delta_min, U_cvx[1, k] <= delta_max]
         constraints += [X_cvx[2, k] >= 0.0, X_cvx[2, k] <= V_cruising]
         
     prob = cp.Problem(cp.Minimize(cost), constraints)
     # ==============================================================================
 
     for step in range(sim_steps):
-        if step % 50 * size == 0 and show: 
-            print(f'Step: {step} | Speed: {x_current[2]:.2f} m/s | Distance traveled: {s_total_traveled:.2f} / {track_length:.2f} m')
+        if step % 100 * size == 0 and show: 
+            print(f'Step: {step} | Speed: {x_current[2]:.2f} m/s | Distance traveled: {s_total_traveled:.2f} / {track_length*track_percentual:.2f} m')
         _, current_idx = track_tree.query([x_current[0], x_current[1]])
         
         idx_diff = current_idx - last_current_idx
@@ -306,8 +331,12 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
         #print(x_current[2], X_cvx[2].value[:4])
         v_h = X_cvx[2].value[1:]
         acc_h = U_cvx[0].value
-
+        #acc_h = np.clip(acc_h,0,np.inf)
         p_horizon = Preq(v_h,acc_h)
+        p_horizon = np.clip(p_horizon,0,np.inf)
+        for i,_ in enumerate(p_horizon):
+            if p_horizon[i] == 0:
+                p_horizon[i] = 1e-5
         
         
         t_history.append((step + 1) * dt)
@@ -352,6 +381,8 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
             if show: print('Vref and Acc Break')
             break
     
+    if show: 
+        print(f'Time: {t_history[-1]} | Speed: {x_current[2]:.2f} m/s | Distance traveled: {s_total_traveled:.2f} / {track_length*track_percentual:.2f} m')
     t_history = np.array(t_history)
     score = RMSE(np.array(v_ref_history)[t_history < t_lim], np.array(v_history)[t_history < t_lim])
     turning_history.append(1 if turning else 0)
@@ -373,18 +404,18 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
 
 # %%
 
-def objective(trial):
-    W_X = trial.suggest_float('W_X', 1, 30,step=0.25)
-    W_Y = trial.suggest_float('W_Y', 1, 30,step=0.25)
-    W_speed = trial.suggest_float('W_speed', 1, 20,step=0.25)
-    W_acc = trial.suggest_float('W_acc'    , 1, 30,step=0.25)
-    W_delta = trial.suggest_float('W_delta', 0.25, 15,step=0.25)
-    W_U0 = trial.suggest_float('W_U0'      , 1, 30,step=0.25)
-    W_U1 = trial.suggest_float('W_U1'      , 0.25, 20,step=0.25)
+'''def objective(trial):
+    W_X =         trial.suggest_float('W_X', 1, 15,step=0.5)
+    W_Y =         trial.suggest_float('W_Y', 1, 15,step=0.5)
+    W_speed = trial.suggest_float('W_speed', 0.1, 15,step=0.1)
+    W_acc = trial.suggest_float(    'W_acc', 0.1, 15,step=0.1)
+    W_delta = trial.suggest_float('W_delta', 0.1, 15,step=0.1)
+    W_U0 = trial.suggest_float(      'W_U0', 0.1, 15,step=0.1)
+    W_U1 = trial.suggest_float(      'W_U1', 0.1, 15,step=0.1)
     
-    score,BreakCheck,_ = SimulateRT(dt=0.1, n_horizon=30, sim_steps=800,track_percentual=0.9,
+    score,BreakCheck,_ = SimulateRT(dt=0.25, n_horizon=12, sim_steps=350,track_percentual=0.9,
                                     W_X=W_X, W_Y=W_Y, W_speed=W_speed, W_acc=W_acc, W_delta=W_delta,
-                                    W_U0=W_U0, W_U1=W_U1, size=1, show=False)
+                                    W_U0=W_U0, W_U1=W_U1, size=1.5, show=False)
     if BreakCheck:
         raise TrialPruned()
     
@@ -397,23 +428,22 @@ study = optuna.create_study(
     #storage="sqlite:///" + f'Optuna/RT.db', study_name=f'P{0}'
     )
 
-study.optimize(objective, n_trials=50)
+study.optimize(objective, n_trials=500)
 best_params = study.best_params
 params = list(best_params.values())
-print('Erro:', study.best_value, 'parameters: ', params)
+print('Erro:', study.best_value, 'parameters: ', params)'''
 
 
 # %% [markdown]
-# Erro: 3.713029098148217 parameters:  [1.0, 5.75, 14.5, 11.0, 12.0, 16.0, 17.0]\
-# Erro: 3.6820291798414653 parameters:  [2.0, 7.5, 18.0, 12.5, 9.5, 23.25, 12.75]
+# Erro: 3.180956239922146 parameters:  [1.0, 1.0, 14.6, 1.25, 10.51, 1.72, 11.87]
 # 
 
 # %%
 if 'params' in globals(): params = params
-else: params = [2.0, 7.5, 18.0, 12.5, 9.5, 23.25, 12.75]
+else: params = [1.0, 1.0, 14.6, 1.25, 10.51, 1.72, 11.87]
 W_X,W_Y,W_speed,W_acc,W_delta,W_U0,W_U1 =  params
 
-score,BreakCheck,data_sim = SimulateRT(dt=0.1, n_horizon=30, sim_steps=800,track_percentual=0.9,
+score,BreakCheck,data_sim = SimulateRT(dt=0.25, n_horizon=12, sim_steps=1e5,track_percentual=0.9,
                                     W_X=W_X, W_Y=W_Y, W_speed=W_speed, W_acc=W_acc, W_delta=W_delta,
                                     W_U0=W_U0, W_U1=W_U1, size=1, show=True)
 [t_history, v_history, acc_history, delta_history, turning_history, x_history, y_history, x_mid, y_mid, psi_history,
@@ -431,74 +461,87 @@ PlotSeriesPLY(xSeries,ySeries,names,title=f'Parameters Over Time|RMSE: {score}')
 PlotMPCTracksPLY(data,width=800,height=500)
 
 # %%
-def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3):
+def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
+                W_H2=1, W_SoC=10000.0, W_FC=1.0):
     # --- Downsample the 0.1s vehicle trajectory data to 1.0s intervals ---
     Preq_ems_input = []
     for step_1s in range(len(Preq_horizon_raw)):
         if step_1s % 10 == 0:
             forecast_vector_30points = Preq_horizon_raw[step_1s]
-            forecast_3points_1s = forecast_vector_30points[::14]
+            forecast_3points_1s = forecast_vector_30points[[3, 7, 11]]
             Preq_ems_input.append(forecast_3points_1s)
-    
-    print('Preq_ems_input:',Preq_ems_input[1])
+            
     Preq_ems_input = np.array(Preq_ems_input) 
     sim_steps = len(Preq_ems_input)
-    
+
     # --- Power Sources & Vehicle Constants (From Article Table 1) ---
-    Q_bat = 90.0        # Battery Capacity (Ah)
-    eta_dcdc = 0.9      # Unidirectional DC/DC Converter Efficiency[cite: 3]
-    Q_sec = Q_bat * 3600.0 
+    Q_bat_h = 90.0        # Battery Capacity (Ah)
+    Q_bat_s = Q_bat_h * 3600.0 
+    eta_dcdc = 0.9      # Unidirectional DC/DC Converter Efficiency
+    rho_H2 = 120 * 1e6
     
-    # --- ADJUSTED WEIGHTS & TUNING ---
-    # We switch the Fuel Cell penalty to LINEAR because squaring a 0-60kW value 
-    # yields an enormous penalty (60^2 = 3600) compared to SoC tracking.
-    W_H2_linear = 0.5   # Linear penalty per kW of fuel cell power
-    W_SoC = 5000.0      # Heavily increase SoC weight to force battery maintenance
-    W_smooth = 1.0      # Lower actuation smoothness penalty to allow movement
-    
-    SOC_i = 0.6         # Initial battery SoC[cite: 3]
-    Pfc_i = 0.0         # Initial fuel cell power output (kW)[cite: 3]
+    SOC_i = 0.6         
+    Pfc_i = 0.0        
     x_current = np.array([SOC_i, Pfc_i])
     
     t_history, SOC_history, Pfc_history = [0.0], [x_current[0]], [x_current[1]]
-    dPfc_history, P_bat_history, U_DC_history = [], [], []
+    cur_history = [0.0]
+    Preq_history, P_batL_history, P_batU_history = [0.0], [0.0], [0.0]
+    dPfc_history, P_bat_history, U_DC_history = [0.0], [0.0], [0.0]
 
     # ==============================================================================
-    # --- CVXPY PARAMETRIC SETUP ---
+    # --- FIXED CVXPY COMPLIANT SETUP (ELEMENT-SPECIFIC ALGEBRA) ---
     # ==============================================================================
-    X_cvx = cp.Variable((2, n_horizon + 1))  
-    U_cvx = cp.Variable((1, n_horizon))      
+    X_soc = cp.Variable(n_horizon + 1)
+    X_pfc = cp.Variable(n_horizon + 1)
+    U_dpfc = cp.Variable(n_horizon) 
 
-    x_init_param = cp.Parameter(2)
+    # Numerical scalar parameters
+    soc_init_param = cp.Parameter()
+    pfc_init_param = cp.Parameter()
     P_req_param = cp.Parameter(n_horizon)  
-    
-    A_params = [cp.Parameter((2, 2)) for _ in range(n_horizon)]
-    Bu_params = [cp.Parameter((2, 1)) for _ in range(n_horizon)]
-    Bv_params = [cp.Parameter((2, 1)) for _ in range(n_horizon)]
+    alpha_param = cp.Parameter() 
+
+    P_bat_min_param = cp.Parameter()
+    P_bat_max_param = cp.Parameter()
 
     cost = 0
-    constraints = [X_cvx[:, 0] == x_init_param]
+    constraints = [
+        X_soc[0] == soc_init_param,
+        X_pfc[0] == pfc_init_param,
+    ]
 
     for k in range(n_horizon):
         constraints += [
-            X_cvx[:, k+1] == A_params[k] @ X_cvx[:, k] 
-                             + Bu_params[k] @ U_cvx[:, k] 
-                             + Bv_params[k] * P_req_param[k]
+            X_soc[k+1] == X_soc[k] + alpha_param * X_pfc[k] \
+                                   + alpha_param * U_dpfc[k] \
+                                   - (alpha_param/eta_dcdc) * P_req_param[k],
+            
+            X_pfc[k+1] == X_pfc[k] + U_dpfc[k],
         ]
-        
+
+        # Operational limits constraints
         constraints += [
-            X_cvx[1, k+1] >= 0.0,       # P_fc min limit (kW)[cite: 3]
-            X_cvx[1, k+1] <= 60.0,      # P_fc max limit (kW)[cite: 3]
-            U_cvx[0, k] >= -2.0,        # Increased rate boundary for quicker response
-            U_cvx[0, k] <= 2.0,         
-            X_cvx[0, k+1] >= 0.3,       # SoC operating lower boundary[cite: 3]
-            X_cvx[0, k+1] <= 0.9        # SoC operating upper boundary[cite: 3]
+            X_pfc[k+1] >=  0.0,       # Min FC Power (kW)
+            X_pfc[k+1] <= 60.0,       # Max FC Power (kW)
+            U_dpfc[k]  >= 0.0,       # Rate limit bounds (kW/s)
+            #U_dpfc[k]  <=  1.0,        
+            X_soc[k+1] >=  0.3,       # SoC tracking bounds
+            X_soc[k+1] <=  0.9,
+            #P_req_param[k] - (X_pfc[k] + U_dpfc[k]) * eta_dcdc >= P_bat_min_param,
+            #P_req_param[k] - (X_pfc[k] + U_dpfc[k]) * eta_dcdc <= P_bat_max_param
+            
         ]
-        
-        # CHANGED: Linear cost on fuel cell power to reflect real consumption (Eq. 40)[cite: 1, 3]
-        cost += W_H2_linear * X_cvx[1, k+1]              
-        cost += W_SoC * cp.square(X_cvx[0, k+1] - 0.6)      
-        cost += W_smooth * cp.square(U_cvx[0, k])            
+        # Costs
+        C_H2 = W_H2 * X_pfc[k+1] * 1000 * dt / (GetETAfc(x_current[1]) * rho_H2)
+        C_SOC = W_SoC * (X_soc[k] - X_soc[k+1]) * Q_bat_h
+        #C_FC = W_FC * X_pfc[k+1] * 1000 * dt
+        cost += C_H2           
+        cost += C_SOC           
+        #cost += C_FC           
+        #cost += W_SoC * cp.square(X_soc[k+1] - 0.6)      
+        #cost += W_SoC * cp.square(X_soc[k+1] - X_soc[k]) * 47.3
+        #cost += W_smooth * cp.square(U_dpfc[k])            
 
     prob = cp.Problem(cp.Minimize(cost), constraints)
 
@@ -506,6 +549,9 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3):
     # --- EXECUTION SIMULATION LOOP ---
     # ==============================================================================
     print("--- Diagnostics Start ---")
+
+    cost_history = []
+
     for step in range(sim_steps):
         horizon_req = Preq_ems_input[step]
         if len(horizon_req) < n_horizon:
@@ -513,67 +559,176 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3):
 
         horizon_req_kw = horizon_req / 1000.0
 
-        #print(step,horizon_req_kw)
+        R_bat, U_ocv = GetBatterieParams(x_current[0])
+                
+        # We need a tentative current estimate to compute the plant's terminal voltage
+        #P_bat_est_watts = (horizon_req_kw[0] - x_current[1] * eta_dcdc) * 1000.0
+        #inside_sqrt_est = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_est_watts)
+        #I_bat_est = (U_ocv - np.sqrt(inside_sqrt_est)) / (2.0 * R_bat)
+        pbat = horizon_req_kw[0] - x_current[1] * eta_dcdc
+        I_bat_est = GetI_bat(x_current[0], pbat)
+        U_DC = U_ocv - I_bat_est * R_bat 
 
-        current_soc = x_current[0]
-        R_bat, U_ocv = GetBatterieParams(current_soc) 
-        A_mat, Bu_mat, Bv_mat = get_vehicle_matrices(U_ocv, Q_bat, eta_dcdc, dt=dt) 
+        alpha_val = (dt * eta_dcdc) / (U_DC * Q_bat_s)
 
-        x_init_param.value = x_current
+        # FIX 1: UPDATE ALL PARAMETER VALUES PRIOR TO INVOKING THE SOLVER
+        soc_init_param.value = float(x_current[0])
+        pfc_init_param.value = float(x_current[1])
+        alpha_param.value = float(alpha_val)
         P_req_param.value = horizon_req_kw.flatten()
-        
-        for k in range(n_horizon):
-            A_params[k].value = A_mat
-            Bu_params[k].value = Bu_mat
-            Bv_params[k].value = Bv_mat
 
+        P_bat_min_kw = (U_DC * -200.0) / 1000.0
+        P_bat_max_kw = (U_DC * 300.0) / 1000.0
+
+        P_bat_min_param.value = float(P_bat_min_kw)
+        P_bat_max_param.value = float(P_bat_max_kw)
+
+
+        # FIX 1 (CONTINUED): Solve now that parameters accurately describe the current step
         try:
-            prob.solve(
-                solver=cp.MOSEK, 
-                verbose=False, 
-                warm_start=True, 
-                canon_backend=cp.SCIPY_CANON_BACKEND
-            )
-            u_control = U_cvx[0, 0].value
-            if u_control is None: raise ValueError
+            prob.solve(solver=cp.MOSEK, warm_start=True)
+            u_control = float(U_dpfc[0].value)
+            print(u_control)
+
+            if U_dpfc[0].value is None: raise ValueError
         except Exception:
             u_control = 0.0  
+        
 
-        # Print the first 5 steps to see active variables and demand tracking magnitudes
-        if step < 5:
-            print(f"Step {step} | Demanded Power: {horizon_req_kw[0]:.2f} kW | "
-                  f"Calculated Delta Pfc: {u_control:.4f} | Solver Status: {prob.status}")
 
+
+        # --- Nonlinear Plant Physics Update ---
         P_fc_actual = float(x_current[1] + u_control)
         P_bat_actual = float(horizon_req_kw[0] - P_fc_actual * eta_dcdc)
         
         P_bat_watts = P_bat_actual * 1000.0
-        inside_sqrt = U_ocv**2 - 4.0 * R_bat * P_bat_watts
-        inside_sqrt = max(0.01, inside_sqrt)
-        
+        inside_sqrt = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_watts)
         I_bat_actual = (U_ocv - np.sqrt(inside_sqrt)) / (2.0 * R_bat) 
-        U_DC_true = U_ocv - I_bat_actual * R_bat 
-        
-        soc_next = current_soc - (I_bat_actual * dt) / Q_sec
+
+        #U_DC_true = U_ocv - I_bat_actual * R_bat 
+        soc_next = x_current[0] - (I_bat_actual * dt) / Q_bat_s
         soc_next = np.clip(soc_next, 0.0, 1.0)
 
         x_current = np.array([soc_next, P_fc_actual])
 
         t_history.append((step + 1) * dt)
         SOC_history.append(x_current[0])
+        Preq_history.append(horizon_req_kw[0])
         Pfc_history.append(x_current[1])
+        cur_history.append(I_bat_actual)
         dPfc_history.append(u_control)
         P_bat_history.append(P_bat_actual)
-        U_DC_history.append(U_DC_true)
-
+        U_DC_history.append(U_DC)
+        
+        if step % 1 == 0:
+            print(f"Step {step} | Preq: {horizon_req_kw[0]:.2f} kW | "
+                  #f"Pfc: {pfc_next_sol:.2f} kW | "
+                  f"dPfc: {u_control:.2f} kW | "
+                  f"Pbat: {P_bat_actual:.2f} kW |"
+                  #f"C_H2: {C_H2_numeric:.3f} | "
+                  #f"C_SoC: {C_SOC_numeric:.3f} | "
+                  f"Status: {prob.status}")
+            
     print("--- Diagnostics End ---\n")
-    return (np.array(t_history), np.array(SOC_history), np.array(Pfc_history), 
+    return (np.array(t_history), np.array(cur_history), np.array(SOC_history),
+            np.array(Preq_history), np.array(Pfc_history), 
             np.array(dPfc_history), np.array(P_bat_history), np.array(U_DC_history))
 
 Preq_horizon_data = data_sim[11]
-t_ems, soc_ems, pfc_ems, dpfc_ems, pbat_ems, udc_ems = SimulateEMS(Preq_horizon_data[1:])
+t_ems, cur_ems, soc_ems, preq_ems, pfc_ems, dpfc_ems, pbat_ems, udc_ems = SimulateEMS(Preq_horizon_data[1:], dt=1.0, n_horizon=3,
+                W_H2=7.46, W_SoC=224, W_FC=896,
+                )
 
 # %%
-(data_sim[11][40])
+ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][:3]
+xSeries = [t_ems for i in range(len(ySeries))]
+names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][:3]
+PlotSeriesPLY(xSeries,ySeries,names)
+
+
+# %%
+ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][-1:]
+xSeries = [t_ems for i in range(len(ySeries))]
+names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][-1:]
+PlotSeriesPLY(xSeries,ySeries,names)
+
+
+# %%
+ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][-1:]
+xSeries = [t_ems for i in range(len(ySeries))]
+names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][-1:]
+PlotSeriesPLY(xSeries,ySeries,names)
+
+
+# %%
+def TractionForce(v,acc):
+    cr = 0.0085
+    cd = 0.55
+    rho = 1.225
+    a = 0
+    Area = 8.16
+    m = 3000
+    g = 9.81
+    return m*g*cr*np.cos(a) + m*g*np.sin(a) + m*acc + 0.5*rho*Area*cd*(v**2)
+
+def Preq(v, acc):
+    Ft= TractionForce(v,acc)
+    eta= 1
+    return Ft * v / eta
+
+acc = np.linspace(-5, 3, 100)
+vel = np.linspace(0, 18, 100)
+pot = Preq(vel,acc)
+dft = pd.DataFrame({'acceleration': acc, 'velocity': vel, 'power': pot})
+
+
+# %%
+acc_vec = np.linspace(-4, 2.5, 1000)
+vel_vec = np.linspace(0, 16, 1000)
+
+# 2. A MÁGICA: Cria as matrizes 2D cruzando todas as combinações possíveis
+# ACC_grid e VEL_grid passam a ser matrizes de dimensão (100, 100)
+VEL_grid, ACC_grid = np.meshgrid(vel_vec, acc_vec)
+
+# 3. Calcula a potência para a malha completa
+# Dividimos por 1000 para converter de Watts para Kilowatts (kW), melhorando a escala do gráfico
+POT_grid = Preq(VEL_grid, ACC_grid) / 1000.0
+
+# 4. Monta o gráfico de superfície 3D no Plotly
+fig = go.Figure(data=[go.Surface(
+    z=POT_grid,         # Eixo Z: Potência (Matriz 2D)
+    x=vel_vec,          # Eixo X: Velocidade (Vetor 1D)
+    y=acc_vec,          # Eixo Y: Aceleração (Vetor 1D)
+    colorscale='Viridis',
+    colorbar=dict(
+        title=dict(text="Power<br>(kW)", font=dict(size=12)),
+        ticks="outside"
+    ),
+    
+    # A MÁGICA DO HOVER: Lê x, y e z mapeados nativamente pela GPU no navegador
+    hovertemplate=(
+        "Speed: %{x:.2f} m/s<br>"
+        "Acceleration: %{y:.2f} m/s²<br>"
+        "Power: %{z:.2f} kW<br>"
+        "<extra></extra>"  # Oculta a caixa extra com o nome do traço
+    )
+)])
+
+# 5. Configurações de layout, títulos dos eixos 3D e enquadramento de câmera
+fig.update_layout(
+    title="Required Power Surface vs Vehicle State (Acceleration & Velocity)",
+    width=900,
+    height=650,
+    template="plotly_white",
+    scene=dict(
+        xaxis_title="Velocity (m/s)",
+        yaxis_title="Acceleration (m/s²)",
+        zaxis_title="Power (kW)",
+        # Ajusta o aspect ratio para a visualização 3D ficar proporcional
+        aspectratio=dict(x=1, y=1, z=0.8) 
+    )
+)
+
+fig.show()
 
 
