@@ -101,6 +101,177 @@ def PlotSeriesPLY(xSeries=None,ySeries=None, names=None, title='Séries Temporai
     fig.update_xaxes(title_text='Tempo / Frequência', row=1, col=1,)
     fig.show()
 
+def PlotTwoScalesSeriesPLT(yS1, yS2, xS1=None, xS2=None, w=5, h=3, Labels1=None, Labels2=None,
+                   x_labels=None, y_labels=None, names=None, out=None, title=None):
+    if names is None: names = ['s1', 's2']
+    if y_labels is None: y_labels = ['Y1', 'Y2']
+    if x_labels is None: x_labels = ['X1', 'X2']
+    if xS1 is None: xS1 = [np.arange(len(yS1[i])) for i in range(len(yS1))]
+    if xS2 is None: xS2 = [np.arange(len(yS2[i])) for i in range(len(yS2))]
+    
+    if Labels1 is None:
+        Labels1 = [f'Y1-S{i+1}' for i in range(len(yS1))]
+    if Labels2 is None:
+        Labels2 = [f'Y2-S{i+1}' for i in range(len(yS2))]
+
+    LineStyles = [
+        ('-'),  # solid
+        ('--'),  # loosely dashed
+        (':'),  # densely dashed
+        ('.'),  # dotted
+        ('-.'),  # densely dotted
+        ('-. '),  # dashdotted
+        ('-. '),  # densely dashdotted
+    ]
+    
+    nLS = max(len(yS1), len(yS2))
+    LSs = LineStyles[:nLS]
+    
+    fig, ax = plt.subplots(figsize=(w, h))
+    ax2_y = ax.twinx()
+    ax2_x = ax2_y.twiny()
+    ax2_y.set_ylabel(y_labels[1], color='red')
+    ax2_y.tick_params(axis='y', length=4, width=1.25, colors='r')
+    
+    handles1 = []
+    for x1, y1, lb, ls in zip(xS1, yS1, Labels1, LSs):
+        p1, = ax.plot(x1, y1, color='blue', linestyle=ls, label=lb)
+        handles1.append(p1)
+    
+    handles2 = []
+    for x2, y2, lb, ls in zip(xS2, yS2, Labels2, LSs):
+        p2, = ax2_x.plot(x2, y2, color='red', linestyle=ls, label=lb)
+        handles2.append(p2)
+    
+    ax.set(xlabel=x_labels[0], ylabel=y_labels[0])
+    ax2_x.set(xlabel=x_labels[1], ylabel=y_labels[1])
+    
+    ax.yaxis.label.set_color('blue')
+    ax.xaxis.label.set_color('blue')
+    ax2_x.xaxis.label.set_color('red')
+    ax2_y.yaxis.label.set_color('red')
+    
+    ax.tick_params(axis='y', length=4, width=1.25, colors='blue')
+    ax.tick_params(axis='x', length=4, width=1.25, colors='blue')
+    ax2_x.tick_params(axis='x', length=4, width=1.25, colors='red')
+    ax2_y.tick_params(axis='y', length=4, width=1.25, colors='red')
+    
+    ax.grid(True, linestyle=':', color='blue', alpha=0.5)
+    ax2_x.grid(True, linestyle=':', color='red', alpha=0.5)
+    ax2_y.grid(True, linestyle=':', color='red', alpha=0.5)
+    
+    ax2_x.spines['left'].set_color('blue')
+    ax2_x.spines['right'].set_color('red')
+    ax2_x.spines['top'].set_color('red')
+    ax2_x.spines['bottom'].set_color('blue')
+    
+    #fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.suptitle(title, fontsize='large')
+    fig.legend(handles=handles1+handles2,
+               #loc='center',
+               bbox_to_anchor=(0.9, 0.85),
+               fontsize='small', framealpha=1)
+    
+    if out != None:
+        plt.savefig(out, dpi=500)  # otherwise the right y-label is slightly clipped
+    plt.show()
+
+def PlotTwoScalesSeriesPLY(yS1, yS2, xS1=None, xS2=None, w=700, h=450, Labels1=None, Labels2=None,
+                     x_labels=None, y_labels=None, names=None, out=None, title=None):
+    
+    if names is None: names = ['s1', 's2']
+    if y_labels is None: y_labels = ['Y1', 'Y2']
+    if x_labels is None: x_labels = ['X1', 'X2']
+    
+    if xS1 is None: xS1 = [np.arange(len(yS1[i])) for i in range(len(yS1))]
+    if xS2 is None: xS2 = [np.arange(len(yS2[i])) for i in range(len(yS2))]
+    
+    if Labels1 is None: Labels1 = [f'Y1-S{i+1}' for i in range(len(yS1))]
+    if Labels2 is None: Labels2 = [f'Y2-S{i+1}' for i in range(len(yS2))]
+
+    # Mapeamento estrito de estilos de linha Matplotlib -> Plotly
+    plotly_line_styles = ['solid', 'dash', 'dot', 'dashdot', 'longdash', 'longdashdot']
+    
+    fig = go.Figure()
+
+    # --- Grupo 1: Vinculado ao Eixo X1 e Y1 (Azul) ---
+    for idx, (x1, y1, lb) in enumerate(zip(xS1, yS1, Labels1)):
+        ls = plotly_line_styles[idx % len(plotly_line_styles)]
+        fig.add_trace(go.Scatter(
+            x=x1, y=y1, name=lb, mode='lines',
+            line=dict(color='blue', dash=ls, width=2),
+            xaxis='x', yaxis='y'
+        ))
+
+    # --- Grupo 2: Vinculado ao Eixo X2 e Y2 (Vermelho) ---
+    for idx, (x2, y2, lb) in enumerate(zip(xS2, yS2, Labels2)):
+        ls = plotly_line_styles[idx % len(plotly_line_styles)]
+        fig.add_trace(go.Scatter(
+            x=x2, y=y2, name=lb, mode='lines',
+            line=dict(color='red', dash=ls, width=2),
+            xaxis='x2', yaxis='y2'
+        ))
+
+    # --- Configuração Dinâmica de Margem ---
+    top_margin = 35 if title is None else 70
+
+    # --- Estruturação do Layout Multi-Eixos ---
+    fig.update_layout(
+        width=w, height=h,
+        title=title,
+        template='plotly_white',
+        margin=dict(t=top_margin, b=50, l=60, r=60),
+        showlegend=True,
+        legend=dict(
+            x=1.12, y=1,
+            xanchor='left', yanchor='top',
+            bordercolor='black', borderwidth=1
+        ),
+        
+        # Eixo X Principal (Inferior - Azul)
+        xaxis=dict(
+            title=dict(text=x_labels[0], font=dict(color='blue')),
+            tickfont=dict(color='blue'),
+            linecolor='blue', mirror=False,
+            showgrid=True, gridcolor='rgba(0, 0, 255, 0.15)', gridwidth=1
+        ),
+        
+        # Eixo Y Principal (Esquerdo - Azul)
+        yaxis=dict(
+            title=dict(text=y_labels[0], font=dict(color='blue')),
+            tickfont=dict(color='blue'),
+            linecolor='blue', mirror=False,
+            showgrid=True, gridcolor='rgba(0, 0, 255, 0.15)', gridwidth=1
+        ),
+        
+        # Eixo X Secundário (Superior - Vermelho) -> Equivalente ao twiny
+        xaxis2=dict(
+            title=dict(text=x_labels[1], font=dict(color='red')),
+            tickfont=dict(color='red'),
+            linecolor='red',
+            overlaying='x', side='top',
+            showgrid=True, gridcolor='rgba(255, 0, 0, 0.15)', gridwidth=1
+        ),
+        
+        # Eixo Y Secundário (Direito - Vermelho) -> Equivalente ao twinx
+        yaxis2=dict(
+            title=dict(text=y_labels[1], font=dict(color='red')),
+            tickfont=dict(color='red'),
+            linecolor='red',
+            overlaying='y', side='right',
+            showgrid=True, gridcolor='rgba(255, 0, 0, 0.15)', gridwidth=1
+        )
+    )
+
+    # Exportação opcional de arquivo estático (HTML interativo)
+    if out is not None:
+        if out.endswith('.html'):
+            fig.write_html(out)
+        else:
+            fig.write_image(out, scale=2) # Requer o pacote 'kaleido' para salvar PNG/PDF
+
+    fig.show()
+
 def PlotSeriesDifScalesPLY(xSeries=None, ySeries=None, names=None, title='Séries Temporais',
                   markers=None, xLabel=None, yLabel=None, w=800, h=350):
     

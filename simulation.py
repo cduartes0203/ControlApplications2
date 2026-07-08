@@ -52,6 +52,13 @@ def GetI_bat(soc,pbat):
     inside_sqrt_est = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_est_watts)
     I_bat_est = (U_ocv - np.sqrt(inside_sqrt_est)) / (2.0 * R_bat)
     return I_bat_est
+
+def GetBatterieParams2(soc,pbat):
+    Rbat, Uocv = GetBatterieParams(soc)
+    InSqrt = max(0.01, Uocv**2 - 4.0 * Rbat * pbat * 1e3)
+    Ibat = (Uocv - np.sqrt(InSqrt)) / (2.0 * Rbat)
+    UDC = Uocv - Ibat * Rbat
+    return Ibat, Rbat, UDC
  
 def SelSampler(mode='auto'):    
     if mode == 'auto':
@@ -126,29 +133,6 @@ def get_linear_model_matrices_all(x_current, u_prev, dt, n_horizon, l=2.5):
         
     return A_list, B_list, c_list
 
-def get_vehicle_matrices(U_DC, Q_bat, eta_dcdc=0.9, dt=1.0):
-    # Q_bat is in Ah, convert to Ampere-seconds (Coulombs)
-    Q_sec = Q_bat * 3600.0 
-    
-    # Core factor: how power affects SoC at the current bus voltage
-    alpha = dt / (U_DC * Q_sec)
-    
-    A = np.array([
-        [1.0,  alpha * eta_dcdc],
-        [0.0,  1.0]
-    ])
-    
-    Bu = np.array([
-        [alpha * eta_dcdc],
-        [1.0]
-    ])
-    
-    Bv = np.array([
-        [-alpha],
-        [0.0]
-    ])
-    
-    return A, Bu, Bv
 
 def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
                W_X=1, W_Y=1, W_speed=10, W_acc=1.5, W_delta=0.25, W_U0=1, W_U1=2,
@@ -285,7 +269,6 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
                 v_ref_horizon[k] = TurningSpeed(u_prev_deg, V_cruising, V_turning, k=0.15)
             
         A_mat, B_mat, c_mat = get_linear_model_matrices_all(x_current, u_prev, dt, n_horizon, l)
-
         # Update scalar parameters instantly
         W_acc_param.value = 0.0 if s_total_traveled >= track_length * track_percentual else W_acc
         x_init_param.value = x_current
@@ -336,7 +319,7 @@ def SimulateRT(dt=0.1, n_horizon=30, sim_steps=800, track_percentual=1,
         p_horizon = np.clip(p_horizon,0,np.inf)
         for i,_ in enumerate(p_horizon):
             if p_horizon[i] == 0:
-                p_horizon[i] = 1e-5
+                p_horizon[i] = 0
         
         
         t_history.append((step + 1) * dt)
@@ -443,7 +426,7 @@ if 'params' in globals(): params = params
 else: params = [1.0, 1.0, 14.6, 1.25, 10.51, 1.72, 11.87]
 W_X,W_Y,W_speed,W_acc,W_delta,W_U0,W_U1 =  params
 
-score,BreakCheck,data_sim = SimulateRT(dt=0.25, n_horizon=12, sim_steps=1e5,track_percentual=0.9,
+score,BreakCheck,data_sim = SimulateRT(dt=0.25, n_horizon=12, sim_steps=1e5,track_percentual=1,
                                     W_X=W_X, W_Y=W_Y, W_speed=W_speed, W_acc=W_acc, W_delta=W_delta,
                                     W_U0=W_U0, W_U1=W_U1, size=1, show=True)
 [t_history, v_history, acc_history, delta_history, turning_history, x_history, y_history, x_mid, y_mid, psi_history,
@@ -462,11 +445,11 @@ PlotMPCTracksPLY(data,width=800,height=500)
 
 # %%
 def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
-                W_H2=1, W_SoC=10000.0, W_FC=1.0):
+                W_H2=1, W_SoC=1, L_SoC=1, W_FC=1.0):
     # --- Downsample the 0.1s vehicle trajectory data to 1.0s intervals ---
     Preq_ems_input = []
     for step_1s in range(len(Preq_horizon_raw)):
-        if step_1s % 10 == 0:
+        if step_1s % 4 == 0:
             forecast_vector_30points = Preq_horizon_raw[step_1s]
             forecast_3points_1s = forecast_vector_30points[[3, 7, 11]]
             Preq_ems_input.append(forecast_3points_1s)
@@ -500,7 +483,9 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
     soc_init_param = cp.Parameter()
     pfc_init_param = cp.Parameter()
     P_req_param = cp.Parameter(n_horizon)  
-    alpha_param = cp.Parameter() 
+    Udc_param = cp.Parameter() 
+    etaFC_param = cp.Parameter() 
+    Ibat_param = cp.Parameter() 
 
     P_bat_min_param = cp.Parameter()
     P_bat_max_param = cp.Parameter()
@@ -509,13 +494,16 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
     constraints = [
         X_soc[0] == soc_init_param,
         X_pfc[0] == pfc_init_param,
+
+        X_soc[0] >=  0.4,  
+        X_soc[0] <=  0.9,
     ]
 
     for k in range(n_horizon):
         constraints += [
-            X_soc[k+1] == X_soc[k] + alpha_param * X_pfc[k] \
-                                   + alpha_param * U_dpfc[k] \
-                                   - (alpha_param/eta_dcdc) * P_req_param[k],
+            X_soc[k+1] == X_soc[k] + (X_pfc[k] * dt * eta_dcdc)/(Udc_param * Q_bat_s) \
+                                   + (U_dpfc[k] * dt * eta_dcdc)/(Udc_param * Q_bat_s) \
+                                   - (P_req_param[k] * dt)/(Udc_param * Q_bat_s),
             
             X_pfc[k+1] == X_pfc[k] + U_dpfc[k],
         ]
@@ -524,24 +512,23 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
         constraints += [
             X_pfc[k+1] >=  0.0,       # Min FC Power (kW)
             X_pfc[k+1] <= 60.0,       # Max FC Power (kW)
-            U_dpfc[k]  >= 0.0,       # Rate limit bounds (kW/s)
-            #U_dpfc[k]  <=  1.0,        
-            X_soc[k+1] >=  0.3,       # SoC tracking bounds
+            U_dpfc[k]  >= -1.0,       # Rate limit bounds (kW/s)
+            U_dpfc[k]  <=  1.0,        
+            X_soc[k+1] >=  0.4,       # SoC tracking bounds
             X_soc[k+1] <=  0.9,
-            #P_req_param[k] - (X_pfc[k] + U_dpfc[k]) * eta_dcdc >= P_bat_min_param,
-            #P_req_param[k] - (X_pfc[k] + U_dpfc[k]) * eta_dcdc <= P_bat_max_param
-            
         ]
         # Costs
-        C_H2 = W_H2 * X_pfc[k+1] * 1000 * dt / (GetETAfc(x_current[1]) * rho_H2)
-        C_SOC = W_SoC * (X_soc[k] - X_soc[k+1]) * Q_bat_h
-        #C_FC = W_FC * X_pfc[k+1] * 1000 * dt
+        
+        C_H2  = W_H2 * X_pfc[k+1] * 1000 * dt / (etaFC_param * rho_H2)
+        C_SOC = W_SoC * (X_soc[k] - X_soc[k+1]) * 47.3
+        #L_SOC = L_SoC * cp.square(X_soc[k+1] - X_soc[k]) * 47.3
         cost += C_H2           
         cost += C_SOC           
+        #cost += L_SOC           
         #cost += C_FC           
         #cost += W_SoC * cp.square(X_soc[k+1] - 0.6)      
         #cost += W_SoC * cp.square(X_soc[k+1] - X_soc[k]) * 47.3
-        #cost += W_smooth * cp.square(U_dpfc[k])            
+        #cost += W_FC * cp.square(U_dpfc[k])            
 
     prob = cp.Problem(cp.Minimize(cost), constraints)
 
@@ -560,67 +547,67 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
         horizon_req_kw = horizon_req / 1000.0
 
         R_bat, U_ocv = GetBatterieParams(x_current[0])
-                
-        # We need a tentative current estimate to compute the plant's terminal voltage
-        #P_bat_est_watts = (horizon_req_kw[0] - x_current[1] * eta_dcdc) * 1000.0
-        #inside_sqrt_est = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_est_watts)
-        #I_bat_est = (U_ocv - np.sqrt(inside_sqrt_est)) / (2.0 * R_bat)
         pbat = horizon_req_kw[0] - x_current[1] * eta_dcdc
+        if pbat < 0:
+            pbat = 0.0
         I_bat_est = GetI_bat(x_current[0], pbat)
         U_DC = U_ocv - I_bat_est * R_bat 
-
-        alpha_val = (dt * eta_dcdc) / (U_DC * Q_bat_s)
 
         # FIX 1: UPDATE ALL PARAMETER VALUES PRIOR TO INVOKING THE SOLVER
         soc_init_param.value = float(x_current[0])
         pfc_init_param.value = float(x_current[1])
-        alpha_param.value = float(alpha_val)
+        Udc_param.value = float(U_DC)
         P_req_param.value = horizon_req_kw.flatten()
+        etaFC_param.value = GetETAfc(x_current[1])
+        Ibat_param.value = float(I_bat_est)
+        P_batL = (U_DC * -200.0) / 1000.0
+        P_batU = (U_DC * 300.0) / 1000.0
 
-        P_bat_min_kw = (U_DC * -200.0) / 1000.0
-        P_bat_max_kw = (U_DC * 300.0) / 1000.0
-
-        P_bat_min_param.value = float(P_bat_min_kw)
-        P_bat_max_param.value = float(P_bat_max_kw)
-
+        P_bat_min_param.value = float(P_batL)
+        P_bat_max_param.value = float(P_batU)
 
         # FIX 1 (CONTINUED): Solve now that parameters accurately describe the current step
         try:
-            prob.solve(solver=cp.MOSEK, warm_start=True)
+            prob.solve(
+                solver=cp.MOSEK, 
+                verbose=False, 
+                warm_start=True, 
+            )
             u_control = float(U_dpfc[0].value)
-            print(u_control)
-
             if U_dpfc[0].value is None: raise ValueError
         except Exception:
             u_control = 0.0  
-        
-
-
 
         # --- Nonlinear Plant Physics Update ---
         P_fc_actual = float(x_current[1] + u_control)
         P_bat_actual = float(horizon_req_kw[0] - P_fc_actual * eta_dcdc)
-        
+        if P_bat_actual < 0: 
+            P_bat_actual = 0.0
+
         P_bat_watts = P_bat_actual * 1000.0
+        
         inside_sqrt = max(0.01, U_ocv**2 - 4.0 * R_bat * P_bat_watts)
         I_bat_actual = (U_ocv - np.sqrt(inside_sqrt)) / (2.0 * R_bat) 
 
         #U_DC_true = U_ocv - I_bat_actual * R_bat 
         soc_next = x_current[0] - (I_bat_actual * dt) / Q_bat_s
+
         soc_next = np.clip(soc_next, 0.0, 1.0)
 
         x_current = np.array([soc_next, P_fc_actual])
 
         t_history.append((step + 1) * dt)
-        SOC_history.append(x_current[0])
         Preq_history.append(horizon_req_kw[0])
-        Pfc_history.append(x_current[1])
         cur_history.append(I_bat_actual)
-        dPfc_history.append(u_control)
-        P_bat_history.append(P_bat_actual)
         U_DC_history.append(U_DC)
+        P_bat_history.append(P_bat_actual)
+        P_batL_history.append(P_batL)
+        P_batU_history.append(P_batU)
+        Pfc_history.append(x_current[1])
+        dPfc_history.append(u_control)
+        SOC_history.append(x_current[0])
         
-        if step % 1 == 0:
+        if step % 10 == 0:
             print(f"Step {step} | Preq: {horizon_req_kw[0]:.2f} kW | "
                   #f"Pfc: {pfc_next_sol:.2f} kW | "
                   f"dPfc: {u_control:.2f} kW | "
@@ -630,105 +617,276 @@ def SimulateEMS(Preq_horizon_raw, dt=1.0, n_horizon=3,
                   f"Status: {prob.status}")
             
     print("--- Diagnostics End ---\n")
-    return (np.array(t_history), np.array(cur_history), np.array(SOC_history),
-            np.array(Preq_history), np.array(Pfc_history), 
-            np.array(dPfc_history), np.array(P_bat_history), np.array(U_DC_history))
+    
+    vecs = [t_history, Preq_history, cur_history, U_DC_history, P_bat_history, P_batL_history, P_batU_history, Pfc_history, dPfc_history, SOC_history]
+    column_names = ['Time', 'P_req', 'I_bat', 'U_DC', 'P_bat', 'P_batL', 'P_batU', 'P_fc', 'dP_fc', 'SOC']
+    df = pd.DataFrame()
+    for col, vec in zip(column_names, vecs):
+        df[col] = np.array(vec)
+
+    return df
 
 Preq_horizon_data = data_sim[11]
-t_ems, cur_ems, soc_ems, preq_ems, pfc_ems, dpfc_ems, pbat_ems, udc_ems = SimulateEMS(Preq_horizon_data[1:], dt=1.0, n_horizon=3,
-                W_H2=7.46, W_SoC=224, W_FC=896,
-                )
+ems = SimulateEMS(Preq_horizon_data[1:], dt=1.0, n_horizon=3,W_H2=1e-5, W_SoC=1111, L_SoC=1, W_FC=896)
 
 # %%
-ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][:3]
-xSeries = [t_ems for i in range(len(ySeries))]
-names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][:3]
-PlotSeriesPLY(xSeries,ySeries,names)
-
-
-# %%
-ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][-1:]
-xSeries = [t_ems for i in range(len(ySeries))]
-names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][-1:]
-PlotSeriesPLY(xSeries,ySeries,names)
-
+time, P_req, I_bat, U_DC, P_bat, P_batL, P_batU, P_fc, dP_fc, SOC = [ems[col].values for col in ems.columns]
+ys = [I_bat]
+xs = [time]*len(ys)
+PlotSeriesPLY1(xs,ys, names=['I_bat'], title=None, h=300)
 
 # %%
-ySeries = [preq_ems, pfc_ems, pbat_ems,soc_ems][-1:]
-xSeries = [t_ems for i in range(len(ySeries))]
-names = ['Preq (kW)', 'Pfc (kW)', 'Pbat (kW)','SOC'][-1:]
-PlotSeriesPLY(xSeries,ySeries,names)
+def get_vehicle_matrices(n_horizon, UDC, Q_bat=90, eta_dcdc=0.9, dt=1.0):
 
+    Q_bat = Q_bat * 3600.0 
+    A_list  = np.zeros((n_horizon, 2, 2))
+    Bu_list = np.zeros((n_horizon, 2, 1))
+    Bv_list = np.zeros((n_horizon, 2, 1))
+    C_list  = np.zeros((n_horizon, 2, 2))
+    D_list  = np.zeros((n_horizon, 2, 1))
 
-# %%
-def TractionForce(v,acc):
-    cr = 0.0085
-    cd = 0.55
-    rho = 1.225
-    a = 0
-    Area = 8.16
-    m = 3000
-    g = 9.81
-    return m*g*cr*np.cos(a) + m*g*np.sin(a) + m*acc + 0.5*rho*Area*cd*(v**2)
+    for k in range(n_horizon):
 
-def Preq(v, acc):
-    Ft= TractionForce(v,acc)
-    eta= 1
-    return Ft * v / eta
-
-acc = np.linspace(-5, 3, 100)
-vel = np.linspace(0, 18, 100)
-pot = Preq(vel,acc)
-dft = pd.DataFrame({'acceleration': acc, 'velocity': vel, 'power': pot})
-
-
-# %%
-acc_vec = np.linspace(-4, 2.5, 1000)
-vel_vec = np.linspace(0, 16, 1000)
-
-# 2. A MÁGICA: Cria as matrizes 2D cruzando todas as combinações possíveis
-# ACC_grid e VEL_grid passam a ser matrizes de dimensão (100, 100)
-VEL_grid, ACC_grid = np.meshgrid(vel_vec, acc_vec)
-
-# 3. Calcula a potência para a malha completa
-# Dividimos por 1000 para converter de Watts para Kilowatts (kW), melhorando a escala do gráfico
-POT_grid = Preq(VEL_grid, ACC_grid) / 1000.0
-
-# 4. Monta o gráfico de superfície 3D no Plotly
-fig = go.Figure(data=[go.Surface(
-    z=POT_grid,         # Eixo Z: Potência (Matriz 2D)
-    x=vel_vec,          # Eixo X: Velocidade (Vetor 1D)
-    y=acc_vec,          # Eixo Y: Aceleração (Vetor 1D)
-    colorscale='Viridis',
-    colorbar=dict(
-        title=dict(text="Power<br>(kW)", font=dict(size=12)),
-        ticks="outside"
-    ),
+        A_list[k] = np.array([[1.0,  (dt * eta_dcdc)/(UDC*Q_bat)],
+                              [0.0,  1.0]])
     
-    # A MÁGICA DO HOVER: Lê x, y e z mapeados nativamente pela GPU no navegador
-    hovertemplate=(
-        "Speed: %{x:.2f} m/s<br>"
-        "Acceleration: %{y:.2f} m/s²<br>"
-        "Power: %{z:.2f} kW<br>"
-        "<extra></extra>"  # Oculta a caixa extra com o nome do traço
-    )
-)])
+        Bu_list[k] = np.array([[(dt * eta_dcdc)/(UDC*Q_bat)],
+                    [1.0]])
+        
+        Bv_list[k] = np.array([[-(dt )/(UDC*Q_bat)],
+                    [0.0]])
+        
+        C_list[k] = np.eye(2)
 
-# 5. Configurações de layout, títulos dos eixos 3D e enquadramento de câmera
-fig.update_layout(
-    title="Required Power Surface vs Vehicle State (Acceleration & Velocity)",
-    width=900,
-    height=650,
-    template="plotly_white",
-    scene=dict(
-        xaxis_title="Velocity (m/s)",
-        yaxis_title="Acceleration (m/s²)",
-        zaxis_title="Power (kW)",
-        # Ajusta o aspect ratio para a visualização 3D ficar proporcional
-        aspectratio=dict(x=1, y=1, z=0.8) 
-    )
-)
+        D_list[k] = np.array([[0],[1]])
+    
+    return A_list, Bu_list, Bv_list, C_list, D_list
 
-fig.show()
+def SimulateEMS2(Preq_horizon_raw, dt=1.0, n_horizon=3,
+                W_H2=1, W_SoC=1, L_SoC=1, W_FC=1.0):
+    
+    # --- Downsample the 0.1s vehicle trajectory data to 1.0s intervals ---
+    Preq_ems_input = []
+    for step_1s in range(len(Preq_horizon_raw)):
+        if step_1s % 4 == 0:
+            forecast_vector_30points = Preq_horizon_raw[step_1s]
+            forecast_3points_1s = forecast_vector_30points[[3, 7, 11]]
+            Preq_ems_input.append(forecast_3points_1s)
+            
+    Preq_ems_input = np.array(Preq_ems_input) 
+    sim_steps = len(Preq_ems_input)
+
+    # --- Power Sources & Vehicle Constants (From Article Table 1) ---
+    Q_bat_h = 90.0  # Battery Capacity (Ah)
+    Q_bat_s = Q_bat_h * 3600.0 # Battery Capacity (As)
+    E_bat = 47.3      # Battery Nominal Energy Capacity (kW h)
+    rho_H2 = 120 * 1e6 # H2 Chemical Energy Density
+    eta_dcdc = 0.9      # Unidirectional DC/DC Converter Efficiency
+         
+    x_current = np.array([0.6, 0.0])
+    y_current = np.array([0.0, 0.0])
+    u_last = 0
+    v_last = 0
+    
+    t_history, SOC_history, Pfc_history = [0.0], [x_current[0]], [x_current[1]]
+    cur_history = [0.0]
+    Preq_history, P_batL_history, P_batU_history = [0.0], [0.0], [0.0]
+    dPfc_history, P_bat_history, U_DC_history = [0.0], [0.0], [0.0]
+
+    # ==============================================================================
+    # --- FIXED CVXPY COMPLIANT SETUP (ELEMENT-SPECIFIC ALGEBRA) ---
+    # ==============================================================================
+    X_s = cp.Variable((2, n_horizon + 1))
+    Y_s = cp.Variable((2, n_horizon + 1))
+    U_s = cp.Variable((1, n_horizon))
+
+    x_init = cp.Parameter(2)
+    u_prev = cp.Parameter()
+
+    # Numerical scalar parameters
+    Preq_param = cp.Parameter(n_horizon)  
+    etaFC_param = cp.Parameter() 
+    Ibat_param = cp.Parameter() 
+
+    PbatL_param = cp.Parameter()
+    PbatU_param = cp.Parameter()
+
+    Preq_ = cp.Parameter((1, n_horizon))
+    A_stacked = cp.Parameter((n_horizon * 2, 2))
+    
+    Bu_stacked = cp.Parameter((n_horizon * 2, 1))
+    Bv_stacked = cp.Parameter((n_horizon * 2, 1))
+    C_stacked = cp.Parameter((n_horizon * 2, 2))
+    D_stacked = cp.Parameter((n_horizon * 2, 1))
+
+    cost = 0
+    constraints = [X_s[:, 0] == x_init]
+
+    for k in range(n_horizon):
+        A_k = A_stacked[k*2 :(k+1)*2,:]
+        Bu_k = Bu_stacked[k*2:(k+1)*2,:]
+        Bv_k = Bv_stacked[k*2:(k+1)*2,:]
+        C_k = C_stacked[k*2 :(k+1)*2,:]
+        D_k = D_stacked[k*2 :(k+1)*2,:]
+
+        constraints += [X_s[:,k+1] == A_k @ X_s[:,k] + Bu_k @ U_s[:,k] + Bv_k @ Preq_[:,k]]
+
+        #constraints += [X_s[:,k+1] == X_s[:,k] - (Ibat_param * dt / Q_bat_h*3600)]
+
+        constraints += [Y_s[:,k+1] == C_k @ X_s[:,k] + D_k @ U_s[:,k]]
+
+        constraints += [X_s[1,k+1] == X_s[1,k] + U_s[:,k]]
+
+
+
+        # Operational limits constraints
+        constraints += [
+            X_s[0,k+1] >=  0.3,      
+            X_s[0,k+1] <=  0.9, 
+            X_s[1,k+1] >=  0.0,       # Min FC Power (kW)
+            X_s[1,k+1] <= 60.0,  
+            U_s[0,k]   >= -1.0,       # Rate limit bounds (kW/s)
+            U_s[0,k]   <=  1.0,
+            Ibat_param >= -200,   # Min battery current (A)
+            Ibat_param <=  300,
+        ]
+
+        # Costs
+        C_H2  = W_H2 * X_s[1,k+1] * 1000 * dt / (etaFC_param * rho_H2)
+        C_SOC = W_SoC * (X_s[0,k] - X_s[0,k+1]) * E_bat
+        #L_SOC = L_SoC * cp.square(X_soc[k+1] - X_soc[k]) * 47.3
+        cost += C_H2           
+        cost += C_SOC           
+         
+
+    prob = cp.Problem(cp.Minimize(cost), constraints)
+
+    # ==============================================================================
+    # --- EXECUTION SIMULATION LOOP ---
+    # ==============================================================================
+    #print("--- Diagnostics Start ---")
+
+    for step in range(sim_steps):
+        horizon_req = Preq_ems_input[step]
+        if len(horizon_req) < n_horizon:
+            horizon_req = np.pad(horizon_req, (0, n_horizon - len(horizon_req)), 'edge')
+
+        Preq_horizon = horizon_req / 1000.0
+
+        Rbat, Uocv = GetBatterieParams(x_current[0])
+        Pbat = Preq_horizon[0] - x_current[1] * eta_dcdc
+
+        Ibat = GetI_bat(x_current[0], Pbat)
+
+        if step ==0:
+            print(Ibat,Preq_horizon[0])
+            
+        UDC = Uocv - Ibat * Rbat
+
+        A_list, Bu_list, Bv_list, C_list, D_list = get_vehicle_matrices(n_horizon, UDC, dt=dt)
+
+       
+        Preq_.value = Preq_horizon.reshape(1,n_horizon)
+
+        A_stacked.value  =  A_list.reshape(n_horizon * 2, 2)
+        Bu_stacked.value = Bu_list.reshape(n_horizon * 2, 1)
+        Bv_stacked.value = Bv_list.reshape(n_horizon * 2, 1)
+        C_stacked.value  =  C_list.reshape(n_horizon * 2, 2)
+        D_stacked.value  =  D_list.reshape(n_horizon * 2, 1)
+
+        # FIX 1: UPDATE ALL PARAMETER VALUES PRIOR TO INVOKING THE SOLVER
+        x_init.value = x_current
+        u_prev.value = u_last
+        
+        Preq_param.value = Preq_horizon.flatten()
+        etaFC_param.value = GetETAfc(x_current[1])
+        Ibat_param.value = float(Ibat)
+
+
+        # FIX 1 (CONTINUED): Solve now that parameters accurately describe the current step
+        try:
+            prob.solve(
+                solver=cp.MOSEK, 
+                verbose=False, 
+                warm_start=True, 
+            )
+            u_control = float(U_s[:,0].value)
+            if u_control is None: 
+                raise ValueError
+        except Exception:
+            u_control = u_last  
+
+        u_last = u_control
+        u_in = np.array([[u_last]])
+        v_in = np.array([[Preq_horizon[0]]])
+
+        x_next = A_list[0] @ x_current.reshape(-1,1) + Bu_list[0] @ u_in + Bv_list[0] @ v_in
+        x_next = x_next.flatten()
+        print(x_next)
+        y_current = C_list[0] @ x_current + D_list[0] @ u_in
+        y_current = y_current.flatten()
+        
+        # --- Nonlinear Plant Physics Update ---
+        Soc_next    = x_next[0]
+        Pfc_prev    = float(x_current[1])
+        Soc_current = float(y_current[0])
+        Pfc_current = float(y_current[1])
+        Pbat_current = float(Preq_horizon[0] - Pfc_current * eta_dcdc)
+        Ibat_current, Rbat, UDC = GetBatterieParams2(Soc_current, Pbat_current)
+
+        P_batL = (UDC * -200.0) / 1000.0
+        P_batU = (UDC * 300.0) / 1000.0
+    
+        #print(x_current[0],y_current[0])
+
+        x_current = np.array([Soc_next, Pfc_current])
+
+        t_history.append((step + 1) * dt)
+        Preq_history.append(Preq_horizon[0])
+        cur_history.append(Ibat_current)
+        U_DC_history.append(UDC)
+        P_bat_history.append(Pbat_current)
+        P_batL_history.append(P_batL)
+        P_batU_history.append(P_batU)
+        Pfc_history.append(x_current[1])
+        dPfc_history.append(u_control)
+        SOC_history.append(x_current[0])
+        
+        if step % 10 == 0:
+            print(f"Step {step} | Preq: {Preq_horizon[0]:.2f} kW | "
+                  #f"Pfc: {pfc_next_sol:.2f} kW | "
+                  f"dPfc: {u_control:.2f} kW | "
+                  f"Pbat: {Pbat_current:.2f} kW |"
+                  f"Status: {prob.status}")
+            
+    print("--- Diagnostics End ---\n")
+    
+    vecs = [t_history, Preq_history, cur_history, U_DC_history, P_bat_history, P_batL_history, P_batU_history, Pfc_history, dPfc_history, SOC_history]
+    column_names = ['Time', 'P_req', 'I_bat', 'U_DC', 'P_bat', 'P_batL', 'P_batU', 'P_fc', 'dP_fc', 'SOC']
+    df = pd.DataFrame()
+    for col, vec in zip(column_names, vecs):
+        df[col] = np.array(vec)
+
+    return df
+
+Preq_horizon_data = data_sim[11]
+ems = SimulateEMS2(Preq_horizon_data[1:], dt=1.0, n_horizon=3,W_H2=1e-5, W_SoC=1111, L_SoC=1, W_FC=896)
+
+# %%
+time, P_req, I_bat, U_DC, P_bat, P_batL, P_batU, P_fc, dP_fc, SOC = [ems[col].values for col in ems.columns]
+ys = [P_bat,
+      #P_batL,
+      #P_batU,
+      P_req,
+      P_fc
+      ]
+xs = [time]*len(ys)
+PlotSeriesPLY1(xs,ys, names=['P_bat (kW)', 'P_req (kW)', 'P_fc (kW)'], title=None, h=300)
+
+# %%
+time, P_req, I_bat, U_DC, P_bat, P_batL, P_batU, P_fc, dP_fc, SOC = [ems[col].values for col in ems.columns]
+ys = [I_bat]
+xs = [time]*len(ys)
+PlotSeriesPLY1(xs,ys, names=['I_bat'], title=None, h=300)
 
 
